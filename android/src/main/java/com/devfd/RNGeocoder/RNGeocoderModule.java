@@ -1,7 +1,12 @@
 package com.devfd.RNGeocoder;
 
+import android.content.Intent;
 import android.location.Address;
-import android.location.Geocoder;
+import android.location.Location;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ResultReceiver;
 
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -13,16 +18,18 @@ import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.WritableNativeArray;
 import com.facebook.react.bridge.WritableNativeMap;
 
-import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 public class RNGeocoderModule extends ReactContextBaseJavaModule {
 
-    private Geocoder geocoder;
+    private AddressResultReceiver resultReceiver;
+
+    private Promise currentPromise;
 
     public RNGeocoderModule(ReactApplicationContext reactContext) {
         super(reactContext);
-        geocoder = new Geocoder(reactContext.getApplicationContext());
+        resultReceiver = new AddressResultReceiver(new Handler(Looper.getMainLooper()));
     }
 
     @Override
@@ -32,38 +39,55 @@ public class RNGeocoderModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void geocodeAddress(String addressName, Promise promise) {
-        if (!geocoder.isPresent()) {
-          promise.reject("NOT_AVAILABLE", "Geocoder not available for this platform");
-          return;
-        }
-
-        try {
-            List<Address> addresses = geocoder.getFromLocationName(addressName, 20);
-            promise.resolve(transform(addresses));
-        }
-
-        catch (IOException e) {
-            promise.reject(e);
-        }
+        currentPromise = promise;
+        startIntentService(addressName);
     }
 
     @ReactMethod
     public void geocodePosition(ReadableMap position, Promise promise) {
-        if (!geocoder.isPresent()) {
-            promise.reject("NOT_AVAILABLE", "Geocoder not available for this platform");
-            return;
+        currentPromise = promise;
+        startIntentService(position);
+    }
+
+    private void startIntentService(ReadableMap position) {
+        Location location = new Location("");
+        location.setLatitude(position.getDouble("lat"));
+        location.setLongitude(position.getDouble("lng"));
+        Intent intent = new Intent(getCurrentActivity(), GeocoderIntentService.class);
+        intent.putExtra(Constants.RECEIVER, resultReceiver);
+        intent.putExtra(Constants.LOCATION_DATA_EXTRA, location);
+        getReactApplicationContext().startService(intent);
+    }
+
+    private void startIntentService(String address) {
+        Intent intent = new Intent(getCurrentActivity(), GeocoderIntentService.class);
+        intent.putExtra(Constants.RECEIVER, resultReceiver);
+        intent.putExtra(Constants.ADDRESS_DATA_EXTRA, address);
+        getReactApplicationContext().startService(intent);
+    }
+
+    class AddressResultReceiver extends ResultReceiver {
+        public AddressResultReceiver(Handler handler) {
+            super(handler);
         }
 
-        try {
-            List<Address> addresses = geocoder.getFromLocation(position.getDouble("lat"), position.getDouble("lng"), 20);
-            promise.resolve(transform(addresses));
-        }
-        catch (IOException e) {
-            promise.reject(e);
+        @Override
+        protected void onReceiveResult(int resultCode, Bundle resultData) {
+            if (currentPromise != null) {
+                if (resultCode == Constants.SUCCESS_RESULT) {
+                    ArrayList<Address> addresses = resultData.getParcelableArrayList(Constants.RESULT_DATA_KEY);
+                    currentPromise.resolve(transform(addresses));
+                    currentPromise = null;
+                } else if (resultCode == Constants.FAILURE_RESULT) {
+                    String error = resultData.getString(Constants.ERROR_DATA_KEY);
+                    currentPromise.reject("GEOCODER_ERROR", error);
+                    currentPromise = null;
+                }
+            }
         }
     }
 
-    WritableArray transform(List<Address> addresses) {
+    private WritableArray transform(List<Address> addresses) {
         WritableArray results = new WritableNativeArray();
 
         for (Address address: addresses) {
